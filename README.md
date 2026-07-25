@@ -11,7 +11,7 @@ This file is for humans. The agent follows [SKILL.md](SKILL.md) (the procedure) 
 | 0. Setup | Installs/verifies the Hex CLI and a warehouse CLI, checks Tableau access, asks the fidelity policy, creates a resumable run manifest | Provide a Tableau PAT if none is configured; answer one policy question |
 | 1. Extract | Downloads the Tableau workbook (.twbx) via the REST API and parses its XML for the ground-truth custom SQL, calculated fields, parameters, filters, layout, and colors; grabs rendered PNGs | Send screenshots of hover tooltips (they're invisible to every API) |
 | 2. Validate | Re-runs every section's logic against the warehouse and reconciles with Tableau's numbers **before** building anything | None (agent asks only if the source is ambiguous) |
-| 3. Build | Sends one comprehensive prompt to the Hex agent (`hex thread create --new-project`) with the validated SQL and exact styling spec | None — takes ~10–15 min |
+| 3. Build | Sends one comprehensive prompt to the Hex agent (`hex thread create --new-project`) with the validated SQL and exact styling spec, targeting a **Generative app** (not a classic notebook app) and verifying Hex complied | None — takes ~10–15 min |
 | 4. Self-check loop | Screenshots the Hex app headlessly, diffs it panel-by-panel against the Tableau PNG, re-verifies numbers and that every filter actually changes results, sends fix batches to the Hex agent; repeats until parity | One-time browser login for screenshots; expect 3+ rounds |
 | 5. Sign-off | Presents an evidence pack: side-by-side images, per-panel parity table, explicit approximations, open questions | You accept or request changes |
 

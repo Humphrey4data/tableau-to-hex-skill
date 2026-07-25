@@ -171,10 +171,13 @@ MCP server entry (enables live view-data queries from chat). Config location dep
 
 ## 6. Hex build prompt template
 
-Write to a file, then `hex thread create --new-project "$(cat prompt.txt)" --json`. Adapt this skeleton — the more exact the prompt, the fewer fix rounds:
+Write to a file, then `hex thread create --new-project "$(cat prompt.txt)" --json`. Adapt this skeleton — the more exact the prompt, the fewer fix rounds. The first line pins the app type: there is no CLI flag for it, and without this demand the Hex agent usually builds a classic notebook+app (wrong target — see SKILL.md Phase 3):
 
 ```
-Build a dashboard app replicating our Tableau "<NAME>" dashboard. Use the "<Hex data connection name>"
+Build this as a GENERATIVE APP (App builder -> Generative app), not a classic notebook app:
+the entire dashboard must render inside the generative app, with SQL cells as its data sources.
+
+Replicate our Tableau "<NAME>" dashboard. Use the "<Hex data connection name>"
 data connection (<engine>); write all SQL in <engine>'s dialect.
 
 DATA SOURCES (use these exact tables/columns):
@@ -223,7 +226,7 @@ hex project export $PROJECT_ID -o "$RUN_DIR/app.yaml"
 
 ### Inspect a Generative app's rendered React code (visual check without a screenshot)
 
-If the export YAML contains a `genAppFiles` list, the app is a Hex **Generative app** — a React app rendered client-side. You can't screenshot it yourself, but you can read its source to verify titles, section order, colors, chart types, and which SQL cell/column each chart reads. Dump the files, then read `App.js` (layout + wiring), `lib/theme.js` (color map), and `components/*` (axis/legend/tooltip behavior):
+The export YAML **must** contain a non-empty `genAppFiles` list — that is the proof the build produced a Hex **Generative app** (a React app rendered client-side), which is the required target (SKILL.md Phase 3 step 4; if it's missing, Hex built a classic notebook app — send the rebuild continuation before doing anything else). You can read the generative app's source to verify titles, section order, colors, chart types, and which SQL cell/column each chart reads. Dump the files, then read `App.js` (layout + wiring), `lib/theme.js` (color map), and `components/*` (axis/legend/tooltip behavior):
 
 ```python
 import yaml, os

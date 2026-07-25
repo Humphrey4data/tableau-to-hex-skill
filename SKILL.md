@@ -84,10 +84,13 @@ For every section, before telling Hex anything:
 
 Use the Hex agent, not manual cell authoring (browser automation into Hex's editors is unreliable and `hex project import` regenerates all cell IDs).
 
-1. **Write one comprehensive build prompt** to a file (template: reference.md §6). It must include: every data source with exact schema.table and column names, the validated SQL per section, exact titles/subtitles/labels, hex color codes, layout (rows/columns of cards and charts), tooltip contents, number formats, filter parameters with their option lists and jinja wiring, and dark/light-mode readability.
+**Target app type: Hex Generative app** (App builder → Generative app — a React app Hex renders client-side), NOT a classic notebook+app. Generative apps give pixel-level layout control (custom KPI cards, formula rows, hover tooltips, side-by-side groupings) that classic app builder cells cannot express, and the whole Phase 4 loop (genAppFiles code reads, iframe screenshots) assumes one. `hex thread create` has **no app-type flag** — the build prompt's wording is the *only* control, so the prompt must demand a Generative app explicitly (the template in reference.md §6 opens with this) and Step 4 below verifies Hex complied.
+
+1. **Write one comprehensive build prompt** to a file (template: reference.md §6). It must open by demanding a **Generative app**, and include: every data source with exact schema.table and column names, the validated SQL per section, exact titles/subtitles/labels, hex color codes, layout (rows/columns of cards and charts), tooltip contents, number formats, filter parameters with their option lists and jinja wiring, and dark/light-mode readability.
 2. **Create**: `hex thread create --new-project "$(cat prompt.txt)" --json` → record `thread_id` and project URL **in the manifest**.
 3. **Poll in the foreground** (reference.md §7): `sleep 250` then `hex thread get <thread_id> --json`, repeat. Runs take 4–10 minutes. Do not background the poll — backgrounded `hex` calls lose PATH, and on macOS also Keychain auth.
-4. **If status is `ERROR`**: the run died partway. Send `hex thread continue <thread_id> "Your previous run errored partway. Verify and complete: <bullet list>"` — partial changes usually landed.
+4. **Verify the app type before any parity work**: `hex project export <project_id> -o app.yaml` and check for a non-empty `genAppFiles` list. If it's missing, Hex built a classic notebook+app — do NOT start Phase 4 on it. Send `hex thread continue <thread_id> "You built this as a classic notebook app. Rebuild it as a Generative app (App builder → Generative app): move the entire dashboard into the generative app, keeping the SQL cells as data sources. Do not change any queries."` and re-verify after the thread goes IDLE.
+5. **If status is `ERROR`**: the run died partway. Send `hex thread continue <thread_id> "Your previous run errored partway. Verify and complete: <bullet list>"` — partial changes usually landed.
 
 ## Phase 4 — Self-check loop (repeat until parity)
 
@@ -177,6 +180,7 @@ Done is defined by user acceptance of an evidence pack, not by the agent declari
 
 **Hex tooling**
 
+- **The Hex agent silently defaults to a classic notebook+app** if the prompt doesn't demand a Generative app — there is no CLI flag for app type (`hex thread create`/`app run` can't force it), so it must be in the prompt text, and `genAppFiles` in the export YAML is the proof it happened (Phase 3 step 4).
 - **Agent threads error transiently** — resend with `hex thread continue`; work usually partially landed. Export the YAML to see what survived.
 - **`hex project import` regenerates every cell ID** — never cache cell IDs across an import; re-list with `hex cell list`.
 - **Poll threads in the foreground** — backgrounded `hex` calls lose PATH, and on macOS also Keychain access (auth silently fails).
