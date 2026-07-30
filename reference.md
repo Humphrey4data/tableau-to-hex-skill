@@ -1,6 +1,6 @@
-# Tableau/Looker → Hex Migration: Command Reference
+# Tableau/Looker/Power BI → Hex Migration: Command Reference
 
-Snippets are bash/zsh (macOS or Linux; OS-specific branches are labeled where they exist). §1–5 are the **Tableau source branch**; the **Looker source branch** lives in §11; everything else (§6–10) is source-agnostic. Set these once per session (Tableau values from your agent's Tableau MCP config if one exists — locations in §5 — or from the user; server/site come from the dashboard URL `https://<server>/#/site/<site>/views/...`, with no `/site/` segment on a Tableau Server default site; Looker session vars: §11):
+Snippets are bash/zsh (macOS or Linux; OS-specific branches are labeled where they exist). §1–5 are the **Tableau source branch**; the **Looker source branch** lives in §11; the **Power BI source branch** in §12; everything else (§6–10) is source-agnostic. Set these once per session (Tableau values from your agent's Tableau MCP config if one exists — locations in §5 — or from the user; server/site come from the dashboard URL `https://<server>/#/site/<site>/views/...`, with no `/site/` segment on a Tableau Server default site; Looker session vars: §11; Power BI session vars: §12):
 
 ```bash
 export RUN_DIR=~/.tab2hex/<dashboard-slug>             # run directory (SKILL.md Phase 0); mkdir -p "$RUN_DIR"
@@ -28,7 +28,7 @@ export WH=postgres; export PGURI="postgres://..." # smoke: psql "$PGURI" -c 'sel
 # string and prints JSON rows; add your command to §8 and to the CMDS table in §9.
 ```
 
-Dialect rule: the twb custom SQL is **already** in this engine's dialect (it ran against this warehouse in Tableau) — never translate it, and write every validation query and the Hex build prompt in the same dialect.
+Dialect rule: Tableau's twb custom SQL and Looker's generated SQL are **already** in this engine's dialect (they ran against this warehouse) — never translate those; Power BI DAX is the exception and must be translated into this dialect (SKILL.md Phase 2). Write every validation query and the Hex build prompt in the same dialect.
 
 ## 1. REST API sign-in
 
@@ -177,8 +177,12 @@ Write to a file, then `hex thread create --new-project "$(cat prompt.txt)" --jso
 Build this as a GENERATIVE APP (App builder -> Generative app), not a classic notebook app:
 the entire dashboard must render inside the generative app, with SQL cells as its data sources.
 
-Replicate our Tableau "<NAME>" dashboard. Use the "<Hex data connection name>"
+Replicate our <SOURCE BI> "<NAME>" dashboard. Use the "<Hex data connection name>"
 data connection (<engine>); write all SQL in <engine>'s dialect.
+
+<If the spec scopes multiple dashboards as tabs of one report:>
+TABS: build tab navigation with one tab per dashboard, in this order: <tab names verbatim>.
+Each tab renders only its own dashboard's sections (listed below per tab); shared filters apply across tabs.
 
 DATA SOURCES (use these exact tables/columns):
 1. <db.schema.table> — columns: <col list>. Notes: <grain, dedup rules, excluded IDs, bake lag>.
@@ -187,7 +191,7 @@ DATA SOURCES (use these exact tables/columns):
 GLOBAL: dark-and-light-mode readable; number formats <from the spec>; auto-scale all chart axes (do NOT force zero);
 <business-calendar rules from the spec, if any — e.g. fiscal-quarter starts, workday calendars>.
 
-HEADER: title "<...>"<, subtitle from the spec if Tableau shows one, e.g. a refresh timestamp>.
+HEADER: title "<...>"<, subtitle from the spec if the source shows one, e.g. a refresh timestamp>.
 Filters (real input params wired into every SQL cell via jinja) — omit this block entirely if the spec recorded none:
 - <param name>: options [...], default <...>
 - ...
@@ -262,11 +266,11 @@ dbsqlcli -e "$RUN_DIR/check_section1.sql"        # or POST /api/2.0/sql/statemen
 psql "$PGURI" -f "$RUN_DIR/check_section1.sql" --csv
 ```
 
-Compare each output against the Tableau screenshot values. Only after they match, paste that SQL into the Hex prompt. When the Hex agent later edits SQL, re-export the YAML and re-validate the query it actually shipped — always through the same `WH` branch.
+Compare each output against the source's displayed values (Tableau: screenshot; Looker: the saved `run/json` rows; Power BI: the saved `executeQueries` rows). Only after they match, paste that SQL into the Hex prompt. When the Hex agent later edits SQL, re-export the YAML and re-validate the query it actually shipped — always through the same `WH` branch.
 
 ## 9. Functional filter/parameter test (prove filters actually change results)
 
-**Skip this whole section if the Phase 1 spec recorded "no filters/parameters"** — a workbook with no `Parameters` datasource and no quick filters is a legitimate outcome, not something you missed.
+**Skip this whole section if the Phase 1 spec recorded "no filters/parameters"** — a source with none (Tableau: no `Parameters` datasource and no quick filters; Looker: no `dashboard_filters`; Power BI: no slicers or filter panes) is a legitimate outcome, not something you missed.
 
 Deps: `python3 -m pip install pyyaml jinja2`.
 
@@ -324,7 +328,7 @@ Assertions per filter type:
 
 Gotchas: (1) wrap as `select count(*) c from (<rendered sql>) t` — most engines accept a trailing `order by` inside an aliased subquery, so do NOT try to regex-strip it (you'll mangle window-function `over(order by ...)`); BigQuery may warn about it — remove the *outermost* `order by` only if the engine rejects it. (2) keep the `run()` retry loop for any engine's transient errors (Snowflake's `000904`/`001003` on identical valid SQL is one instance). The shape of the assertions is what matters: strictly-fewer rows, zero leaked rows, and visibly different SQL per toggle branch.
 
-## 10. Screenshot Hex yourself + visual diff vs Tableau (primary parity check)
+## 10. Screenshot Hex yourself + visual diff vs the source (primary parity check)
 
 You CAN screenshot the Hex app without the user: Playwright + the **system Chrome** + a persistent profile. One-time interactive login, headless forever after. This is what catches transform/shape mismatches that SQL diffs and code reads pass silently — for charts, a wrong transform (a cumulative line that should climb rendered as a flat per-day line: same data, same labels, totally different picture); for tables/heatmaps, wrong fill scales, unreadable text on dark fills, and empty-vs-null cell treatment.
 
@@ -349,7 +353,7 @@ with sync_playwright() as p:
     ctx.close()
 ```
 
-Every round — headless capture of the FULL app as ONE stitched PNG (matches Tableau's full-height export; do not settle for viewport screenfuls — panels hide at screenful boundaries and you'll mis-flag them as missing):
+Every round — headless capture of the FULL app as ONE stitched PNG (matches the source's full-height export; do not settle for viewport screenfuls — panels hide at screenful boundaries and you'll mis-flag them as missing):
 
 ```python
 from PIL import Image
@@ -409,7 +413,7 @@ with sync_playwright() as p:
 Compare — normalize both full images to the same width, slice into aligned crops, and read the pairs:
 
 ```python
-# Source PNG: Tableau §4 view-image endpoint -> tableau_view.png; Looker §11 render task -> looker_view.png; run from $RUN_DIR
+# Source PNG: Tableau §4 view-image -> tableau_view.png; Looker §11 render task -> looker_view.png; Power BI §12 exportToFile/Playwright -> pbi_view.png; run from $RUN_DIR
 from PIL import Image
 for name in ["tableau_view", "hex_full"]:   # or "looker_view" on the Looker branch
     im = Image.open(f"{name}.png").convert("RGB")
@@ -500,3 +504,89 @@ Looker MCP (optional — live queries from chat). Two options: the **Looker-mana
 ```
 
 Its tools (`get_models`, `get_explores`, `get_dimensions`, `get_measures`, `get_dashboards`, `query`, `query_sql`, `run_look`) cover discovery and live checks, but the REST calls above remain the extraction path — the MCP doesn't expose render tasks or the raw query bodies. Related official repo: `looker-open-source/looker-skills` teaches agents LookML *authoring* (the opposite direction of this skill) — useful only if the user also wants LookML edited.
+
+## 12. Power BI source adapter (Phase 1, Power BI branch)
+
+Replaces §1–4 when the source is Power BI. Read the licensing preconditions in SKILL.md first — `getDefinition` needs report write permission, XMLA/`exportToFile` need Fabric capacity or PPU, `executeQueries` needs its tenant setting enabled.
+
+Session vars + auth. Easiest token source is the Azure CLI (`brew install azure-cli` / distro package). Note the **two audiences**: Power BI REST uses the `analysis.windows.net` resource; Fabric REST uses `api.fabric.microsoft.com`.
+
+```bash
+export PBI_WS="<workspaceId>"      # from the URL: app.powerbi.com/groups/<WS>/reports/<RPT>/<page>
+export PBI_RPT="<reportId>"
+
+az login --allow-no-subscriptions   # browser; a service principal also works but SKIPS RLS (numbers may differ)
+export PBI_TOKEN=$(az account get-access-token --resource https://analysis.windows.net/powerbi/api --query accessToken -o tsv)
+export FAB_TOKEN=$(az account get-access-token --resource https://api.fabric.microsoft.com --query accessToken -o tsv)
+# tokens expire in ~1h — re-run the two get-access-token lines on 401s
+```
+
+Report definition (layout ground truth — pages, visuals, slicers, filters, bookmarks, tooltip pages):
+
+```bash
+cd "$RUN_DIR"
+# find the semantic model id while you're here
+curl -s "https://api.powerbi.com/v1.0/myorg/groups/$PBI_WS/reports/$PBI_RPT" \
+  -H "Authorization: Bearer $PBI_TOKEN"   # -> .datasetId  => export PBI_DS="..."
+
+# report definition (Fabric API; async - a 202 means poll the Location header until done)
+curl -s -X POST "https://api.fabric.microsoft.com/v1/workspaces/$PBI_WS/reports/$PBI_RPT/getDefinition" \
+  -H "Authorization: Bearer $FAB_TOKEN" -H "Content-Type: application/json" -o repdef.json -D rep_headers.txt
+python3 - <<'EOF'
+import json, base64, pathlib
+d = json.load(open('repdef.json'))
+out = pathlib.Path('report_def'); out.mkdir(exist_ok=True)
+for p in d['definition']['parts']:
+    f = out / p['path'].replace('/', '__')
+    f.write_bytes(base64.b64decode(p['payload']))
+    print(p['path'])
+# PBIR format: definition/pages/<page>/visuals/<visual>/visual.json (type, field bindings incl.
+#   implicit "Sum of X" aggregations, formatting/colors) + page.json + filter files.
+# PBIR-Legacy: one report.json; each visual's "config" value is a JSON STRING - json.loads() it AGAIN.
+EOF
+```
+
+Semantic model as TMDL (measures, relationships, M partition sources — the import-mode blocker check lives in the M source expressions):
+
+```bash
+curl -s -X POST "https://api.fabric.microsoft.com/v1/workspaces/$PBI_WS/semanticModels/$PBI_DS/getDefinition?format=TMDL" \
+  -H "Authorization: Bearer $FAB_TOKEN" -H "Content-Type: application/json" -o modeldef.json
+# decode parts the same way as above -> definition/tables/*.tmdl (measures = DAX, partitions = M source),
+# relationships.tmdl, roles (RLS). Alternative without Fabric API: the local modeling MCP below, or
+# Tabular Editor CLI against the XMLA endpoint (capacity/PPU only).
+```
+
+Reference values per visual (the Phase 2 comparison target). Build one `SUMMARIZECOLUMNS` per visual from its `visual.json` bindings:
+
+```bash
+cat > dax_body.json <<'EOF'
+{"queries":[{"query":"EVALUATE SUMMARIZECOLUMNS('Date'[Month], \"Revenue\", [Total Revenue])"}],
+ "serializerSettings":{"includeNulls":true}}
+EOF
+curl -s -X POST "https://api.powerbi.com/v1.0/myorg/groups/$PBI_WS/datasets/$PBI_DS/executeQueries" \
+  -H "Authorization: Bearer $PBI_TOKEN" -H "Content-Type: application/json" -d @dax_body.json
+# caps: 100k rows / 15MB / 120 calls-min. Runs under YOUR identity => RLS applied.
+```
+
+Rendered PNG. On capacity/PPU use `exportToFile` (async: POST → poll → download); otherwise screenshot app.powerbi.com with the §10 Playwright machinery (one-time login into the persistent profile, then headless):
+
+```bash
+curl -s -X POST "https://api.powerbi.com/v1.0/myorg/groups/$PBI_WS/reports/$PBI_RPT/ExportTo" \
+  -H "Authorization: Bearer $PBI_TOKEN" -H "Content-Type: application/json" -d '{"format":"PNG"}'
+# -> exportId; poll .../exports/<exportId> until status Succeeded; GET .../exports/<exportId>/file
+# (multi-page reports return a zip of PNGs). 404/feature errors here = no capacity -> Playwright fallback.
+```
+
+Power BI MCP (optional). Two official Microsoft servers, both public preview:
+
+```json
+"powerbi-remote": {
+  "url": "https://api.fabric.microsoft.com/v1/mcp/powerbi"
+},
+"powerbi-modeling-mcp": {
+  "command": "npx",
+  "args": ["-y", "@microsoft/powerbi-modeling-mcp@latest", "--start"]
+}
+```
+
+The remote server (Entra OAuth) has Execute-Query (DAX), Get-Semantic-Model-Schema, and Get-Report-Metadata tools — the last returns pages/visuals/filters and can substitute for `getDefinition` when Fabric API access is awkward. The local modeling server connects to Desktop/Fabric/PBIP models and exports TMDL (`database_operations`) and runs DAX (`dax_query_operations`). Neither renders images. Related open-source skills (`data-goblin/power-bi-agentic-development`, `datacoolie/powerbi-skills`, etc.) teach Power BI *authoring* — the opposite direction; their `pbir-format`/`tmdl` references are handy when a PBIR/TMDL construct is unfamiliar.
