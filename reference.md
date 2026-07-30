@@ -1,6 +1,6 @@
-# Tableau → Hex Migration: Command Reference
+# Tableau/Looker → Hex Migration: Command Reference
 
-Snippets are bash/zsh (macOS or Linux; OS-specific branches are labeled where they exist). Set these once per session (Tableau values from your agent's Tableau MCP config if one exists — locations in §5 — or from the user; server/site come from the dashboard URL `https://<server>/#/site/<site>/views/...`, with no `/site/` segment on a Tableau Server default site):
+Snippets are bash/zsh (macOS or Linux; OS-specific branches are labeled where they exist). §1–5 are the **Tableau source branch**; the **Looker source branch** lives in §11; everything else (§6–10) is source-agnostic. Set these once per session (Tableau values from your agent's Tableau MCP config if one exists — locations in §5 — or from the user; server/site come from the dashboard URL `https://<server>/#/site/<site>/views/...`, with no `/site/` segment on a Tableau Server default site; Looker session vars: §11):
 
 ```bash
 export RUN_DIR=~/.tab2hex/<dashboard-slug>             # run directory (SKILL.md Phase 0); mkdir -p "$RUN_DIR"
@@ -409,9 +409,9 @@ with sync_playwright() as p:
 Compare — normalize both full images to the same width, slice into aligned crops, and read the pairs:
 
 ```python
-# Tableau PNG: §4 view-image endpoint (?resolution=high&maxAge=1) -> tableau_view.png (tall); run from $RUN_DIR
+# Source PNG: Tableau §4 view-image endpoint -> tableau_view.png; Looker §11 render task -> looker_view.png; run from $RUN_DIR
 from PIL import Image
-for name in ["tableau_view", "hex_full"]:
+for name in ["tableau_view", "hex_full"]:   # or "looker_view" on the Looker branch
     im = Image.open(f"{name}.png").convert("RGB")
     im = im.resize((1400, int(im.size[1]*1400/im.size[0])))
     for i in range(0, im.size[1], 1150):
@@ -419,3 +419,84 @@ for name in ["tableau_view", "hex_full"]:
 ```
 
 Then **read the image pairs** and diff panel by panel with the fixed per-panel checklists from SKILL.md's discrepancy scan — **charts** against the plotted-series checklist (chart type + marks; x-axis dimension/range/tick format; y-axis unit/tick range; series count/legend/colors; curve geometry — the fingerprint of the underlying transform; headline + endpoint values; number formats), and **tables/heatmaps** against the tabular checklist (fill scale type/steps/palette; scale domain and centre; text colour incl. auto-inversion on dark fills; headers and sort order; empty vs null vs zero cells; triangle vs rectangle shape; column fit; cell formats). Judge only from what is rendered; matching titles or annotation labels prove nothing about the panel's content. Sections won't align 1:1 across slices — match panels by their section headers, not by slice index. Feed every mismatch into the Phase 4 fix batch, and after the Hex thread goes IDLE, **re-run this capture + diff from scratch** — never trust that a fix landed until you see it in the new screenshots. Loop until the diff is clean (or only documented trade-offs remain).
+
+## 11. Looker source adapter (Phase 1, Looker branch)
+
+Replaces §1–4 when the source is Looker. Works for Looker-hosted and customer-hosted instances; the API user's content permissions bound what the API returns.
+
+Session vars + sign-in (API3 credentials; keep the secret off `curl` argv via a payload file, same rule as §1):
+
+```bash
+export LKR_BASE="https://<instance>.cloud.looker.com"   # or self-hosted URL; add :19999 only on legacy setups
+export LKR_CLIENT_ID="..."                              # Admin -> Users -> Edit -> API keys
+export LKR_CLIENT_SECRET="..."                          # env only, never in files
+export DASH_ID="<id>"                                   # numeric = UDD; "model::slug" = LookML dashboard
+
+cd "$RUN_DIR"
+printf 'client_id=%s&client_secret=%s' "$LKR_CLIENT_ID" "$LKR_CLIENT_SECRET" > login.txt
+export LKR_TOKEN=$(curl -s -X POST "$LKR_BASE/api/4.0/login" -d @login.txt \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])") && rm login.txt
+# tokens expire in ~1h — re-run the login when calls start returning 401
+```
+
+Dashboard structure — title, filters (with per-tile listen mapping), layout grid, elements:
+
+```bash
+curl -s "$LKR_BASE/api/4.0/dashboards/$DASH_ID" -H "Authorization: token $LKR_TOKEN" > dash.json
+python3 - <<'EOF'
+import json
+d = json.load(open('dash.json'))
+print('TITLE:', d['title'])
+for f in d.get('dashboard_filters') or []:
+    print('FILTER:', f['name'], '| field:', f.get('dimension'), '| default:', f.get('default_value'))
+for e in d.get('dashboard_elements') or []:
+    print('TILE:', e.get('title'), '| query_id:', e.get('query_id'),
+          '| look_id:', e.get('look_id'), '| merge:', e.get('merge_result_id'))
+    # e['result_maker']['filterables'] shows which dashboard filters this tile LISTENS to
+# d['dashboard_layouts'][0]['dashboard_layout_components'] has row/column/width/height per tile
+EOF
+```
+
+Per-tile ground truth (a Look's query id: `GET /looks/<look_id>` → `query_id`):
+
+```bash
+QID="<query_id>"
+# 1) the EXACT warehouse SQL Looker runs (already in the warehouse dialect) — goes into Phase 2 verbatim
+curl -s "$LKR_BASE/api/4.0/queries/$QID/run/sql"  -H "Authorization: token $LKR_TOKEN" > tile_$QID.sql
+# 2) the rows Looker displays — the Phase 2 comparison target
+curl -s "$LKR_BASE/api/4.0/queries/$QID/run/json" -H "Authorization: token $LKR_TOKEN" > tile_$QID.json
+# 3) the query body — REQUIRED: dynamic_fields (table calcs + custom fields), pivots, totals,
+#    vis_config (chart type, series colors, formats). None of these appear in the SQL.
+curl -s "$LKR_BASE/api/4.0/queries/$QID" -H "Authorization: token $LKR_TOKEN" > tile_$QID.query.json
+```
+
+Rendered PNG of the whole dashboard (async render task — create, poll, download):
+
+```bash
+TASK=$(curl -s -X POST "$LKR_BASE/api/4.0/render_tasks/dashboards/$DASH_ID/png?width=1600&height=6000" \
+  -H "Authorization: token $LKR_TOKEN" -H "Content-Type: application/json" \
+  -d '{"dashboard_style":"tiled"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+# poll until status == "success" (statuses: enqueued_for_query, querying, enqueued_for_render, rendering, success, failure)
+curl -s "$LKR_BASE/api/4.0/render_tasks/$TASK" -H "Authorization: token $LKR_TOKEN" | python3 -c "import sys,json;print(json.load(sys.stdin)['status'])"
+curl -s "$LKR_BASE/api/4.0/render_tasks/$TASK/results" -H "Authorization: token $LKR_TOKEN" -o looker_view.png
+# a 202 from /results = still rendering, poll again; single tiles: POST /render_tasks/dashboard_elements/<element_id>/png
+```
+
+Semantic layer (the Looker branch's equivalent of reading dbt models): LookML definitions via `GET /lookml_models/<model>/explores/<explore>` (field SQL, joins), or read the LookML git repo directly; a LookML dashboard's own YAML file in that repo is its source of truth.
+
+Looker MCP (optional — live queries from chat). Two options: the **Looker-managed MCP server** (Looker-hosted instances only, preview; a Looker admin must register the agent as an OAuth client and enable tools in Admin → Platform → MCP) or the open-source **MCP Toolbox** (works everywhere, incl. customer-hosted):
+
+```json
+"looker-toolbox": {
+  "command": "/path/to/toolbox",
+  "args": ["--stdio", "--prebuilt", "looker"],
+  "env": {
+    "LOOKER_BASE_URL": "https://<instance>.cloud.looker.com",
+    "LOOKER_CLIENT_ID": "<client id>",
+    "LOOKER_CLIENT_SECRET": "<client secret>",
+    "LOOKER_VERIFY_SSL": "true"
+  }
+}
+```
+
+Its tools (`get_models`, `get_explores`, `get_dimensions`, `get_measures`, `get_dashboards`, `query`, `query_sql`, `run_look`) cover discovery and live checks, but the REST calls above remain the extraction path — the MCP doesn't expose render tasks or the raw query bodies. Related official repo: `looker-open-source/looker-skills` teaches agents LookML *authoring* (the opposite direction of this skill) — useful only if the user also wants LookML edited.
